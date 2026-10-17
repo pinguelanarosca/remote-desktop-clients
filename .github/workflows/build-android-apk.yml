@@ -1,0 +1,89 @@
+name: Build Android APK
+
+run-name: Build ${{ inputs.app }} (debug)
+
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: Android app to compile
+        required: true
+        type: choice
+        default: freebVNC
+        options:
+          - freebVNC
+          - bVNC
+          - freeaRDP
+          - aRDP
+          - freeaSPICE
+          - aSPICE
+          - Opaque
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Compile ${{ inputs.app }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          sdkmanager "platforms;android-36" "build-tools;35.0.0" "platform-tools"
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Restore prebuilt native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            --output /tmp/remote-desktop-clients-libs-17.tar.gz \
+            https://github.com/iiordanov/remote-desktop-clients/releases/download/dependencies/remote-desktop-clients-libs-17.tar.gz
+          tar -xzf /tmp/remote-desktop-clients-libs-17.tar.gz
+          test -d remoteClientLib/jni/libs/deps/FreeRDP/client/Android/Studio/freeRDPCore
+          ./bVNC/prepare_project.sh --skip-build libs "$ANDROID_HOME"
+          unzip -tq common/aars/android-database-sqlcipher-4.5.4.aar >/dev/null
+
+      - name: Select exactly one Android app
+        shell: bash
+        env:
+          APP: ${{ inputs.app }}
+        run: |
+          case "$APP" in
+            freebVNC|bVNC|freeaRDP|aRDP|freeaSPICE|aSPICE|Opaque) ;;
+            *) echo "Unsupported app: $APP" >&2; exit 1 ;;
+          esac
+          echo "APP_MODULE=${APP}-app" >> "$GITHUB_ENV"
+
+      - name: Compile selected debug APK
+        shell: bash
+        run: |
+          ./gradlew ":${APP_MODULE}:assembleDebug" \
+            --no-daemon --stacktrace \
+            -Dorg.gradle.jvmargs="-Xmx3g -Dfile.encoding=UTF-8"
+          ls -lh "${APP_MODULE}/build/outputs/apk/debug/"*.apk
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.app }}-debug-apks
+          path: ${{ env.APP_MODULE }}/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
